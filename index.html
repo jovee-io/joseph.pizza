@@ -228,7 +228,6 @@
   const angleNoise = makeSmoother(0.006, 80, 200);
   let   anglePhase = 0;  // a second slow sine for the angle, independent of drip
 
-  let slitX = SLIT_BASE;
 
   // Global column store — composite of ALL pizzas at the slit each frame
   const cols = [];
@@ -301,7 +300,7 @@
       const age = total-1-i;
 
       const drawX = Math.floor(SLIT_X + (total-1-i) + 1 + col.dripX);
-      if (drawX >= W || drawX < 0) continue;
+      if (drawX >= W || drawX <= SLIT_X) continue;
 
       const baseDriftY = (age / (PIZZA_RADIUS*2)) * VERTICAL_DRIFT * driftMod;
       const driftY     = Math.floor(baseDriftY + col.dripY);
@@ -323,10 +322,15 @@
       ctx.putImageData(id, drawX, 0);
     }
 
-    // Live pizzas, clipped left of slit
+    // Live pizzas, clipped strictly to left of slit
+    // Draw each pizza individually so nothing bleeds past SLIT_X
     ctx.save();
-    ctx.beginPath(); ctx.rect(0,0,SLIT_X,H); ctx.clip();
-    ctx.drawImage(tempCanvas,0,0);
+    ctx.beginPath();
+    ctx.rect(0, 0, SLIT_X, H);
+    ctx.clip();
+    pizzas.forEach(p => {
+      ctx.drawImage(p.off, Math.floor(p.x - pSize/2), Math.floor(p.y - pSize/2));
+    });
     ctx.restore();
 
     // Ghost slit line
