@@ -29,17 +29,11 @@
   // =====================================================
   // PARAMETERS
   // =====================================================
-  const PIZZA_COUNT    = 5;
-  const PIZZA_RADIUS   = 100;
-  const NOISE_AMOUNT   = 28;
-  const BG_COLOR       = '#060608';
-  const VERTICAL_DRIFT = 180;
-  const GLITCH_CHANCE  = 0.008;
-  const SLIT_X         = Math.floor(W * 0.35);  // fixed, no wander
-
-  // Drip wave
-  const DRIP_AMPLITUDE = 90;
-  const DRIP_FREQUENCY = 0.003;
+  const PIZZA_COUNT  = 5;
+  const PIZZA_RADIUS = 100;
+  const NOISE_AMOUNT = 28;
+  const BG_COLOR     = '#060608';
+  const SLIT_X       = Math.floor(W * 0.35);
 
   // =====================================================
   // HELPERS
@@ -214,116 +208,77 @@
   const pizzas = Array.from({length:PIZZA_COUNT}, (_,i) => makePizza(i));
 
   // =====================================================
-  // SLIT + COLUMN STORE
+  // TAPESTRY CANVAS
+  // This is the slit scan output — a single offscreen canvas
+  // the full width of the screen. Each frame we:
+  //   1. Shift the entire tapestry one pixel to the right
+  //   2. Plant the new slit column at the left edge (SLIT_X + 1)
+  // Columns that drift off the right edge just disappear.
   // =====================================================
-  const driftNoise = makeSmoother(0.018, 20, 80);
+  const tapestry    = document.createElement('canvas');
+  tapestry.width    = W;
+  tapestry.height   = H;
+  const tapestryCtx = tapestry.getContext('2d');
 
-  // Drip noise — very slow, very smooth
-  const dripNoise  = makeSmoother(0.008, 60, 180);
-  let   dripPhase  = 0;
+  // Fill with background to start
+  tapestryCtx.fillStyle = BG_COLOR;
+  tapestryCtx.fillRect(0, 0, W, H);
 
-  // Angle noise — slowly rotates the drift direction
-  // Output maps to an angle in radians, wandering through all directions
-  // Very slow so the fan-out sweeps lazily rather than spinning
-  const angleNoise = makeSmoother(0.006, 80, 200);
-  let   anglePhase = 0;  // a second slow sine for the angle, independent of drip
-
-
-  // Global column store — composite of ALL pizzas at the slit each frame
-  const cols = [];
-
+  // Temp canvas — composite live pizza feed for slit sampling
   const tempCanvas = document.createElement('canvas');
-  tempCanvas.width=W; tempCanvas.height=H;
-  const tempCtx = tempCanvas.getContext('2d');
+  tempCanvas.width  = W;
+  tempCanvas.height = H;
+  const tempCtx     = tempCanvas.getContext('2d');
 
   // =====================================================
   // MAIN LOOP
   // =====================================================
   function frame() {
 
-    // Update slit
     slitMarker.style.left = SLIT_X + 'px';
 
-    // Draw all pizzas to temp canvas
-    tempCtx.clearRect(0,0,W,H);
-
+    // --- Draw all pizzas to temp canvas (live feed) ---
+    tempCtx.clearRect(0, 0, W, H);
     pizzas.forEach(p => {
-      // Speed wobbles smoothly but never goes negative — always left to right
       const speed = Math.max(0.15, 0.6 + p.speedNoise() * 2.2);
       p.x += speed;
 
-      // Reset only when pizza exits right edge
       if (p.x - p.r > W + 30) {
         p.x   = -pSize/2 - randInt(0, 80);
         p.pal = makeNeonPalette();
-        p.oCtx.clearRect(0,0,pSize,pSize);
+        p.oCtx.clearRect(0, 0, pSize, pSize);
         drawPizza(p.oCtx, pSize/2, pSize/2, p.r, p.pal);
       }
 
-      tempCtx.drawImage(p.off, Math.floor(p.x-pSize/2), Math.floor(p.y-pSize/2));
+      tempCtx.drawImage(p.off, Math.floor(p.x - pSize/2), Math.floor(p.y - pSize/2));
     });
 
-    // Advance phases
-    dripPhase  += 0.012;
-    anglePhase += 0.007;  // slower than drip — angle turns lazily
+    // --- Update tapestry ---
+    // Step 1: shift the entire tapestry one pixel to the right
+    // We do this by drawing it onto itself offset by 1px
+    tapestryCtx.drawImage(tapestry, 1, 0);
 
-    // Current drift magnitude — how far columns get displaced total
-    const dripMag = Math.sin(dripPhase) * DRIP_AMPLITUDE * (0.5 + Math.abs(dripNoise()) * 0.8);
+    // Step 2: clear the leftmost column of the tapestry (at SLIT_X)
+    // so we have a clean slot to plant the new sample
+    tapestryCtx.clearRect(SLIT_X, 0, 1, H);
 
-    // Current drift angle — smoothly wanders through directions
-    // We bias toward downward (positive Y) but let it swing wide
-    // Range: roughly -PI to PI, but sin-shaped so it spends time in each zone
-    const angle = Math.sin(anglePhase) * Math.PI * (0.6 + Math.abs(angleNoise()) * 0.5);
-
-    // Decompose into x and y components, baked into each column at capture
-    const dripX = Math.cos(angle) * dripMag;
-    const dripY = Math.sin(angle) * dripMag;
-
-    // Capture composite slit column
+    // Step 3: grab the slit column from the live feed and plant it
     const slitData = tempCtx.getImageData(SLIT_X, 0, 1, H);
-    const pixels   = new Uint8ClampedArray(slitData.data);
-    cols.push({ pixels, dripX, dripY });
+    tapestryCtx.putImageData(slitData, SLIT_X, 0);
 
-    // Keep store bounded
-    const maxCols = W - SLIT_X + 20;
-    if (cols.length > maxCols) cols.shift();
-
-    // --- Render ---
+    // --- Composite to main canvas ---
     ctx.fillStyle = BG_COLOR;
-    ctx.fillRect(0,0,W,H);
+    ctx.fillRect(0, 0, W, H);
 
-    const total    = cols.length;
-    const driftMod = 1 + driftNoise() * 0.55;
+    // Draw tapestry (right side of slit)
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(SLIT_X, 0, W - SLIT_X, H);
+    ctx.clip();
+    ctx.drawImage(tapestry, 0, 0);
+    ctx.restore();
 
-    for (let i=0; i<total; i++) {
-      const col = cols[i];
-      const age = total-1-i;
-
-      const drawX = Math.floor(SLIT_X + (total-1-i) + 1 + col.dripX);
-      if (drawX >= W || drawX <= SLIT_X) continue;
-
-      const baseDriftY = (age / (PIZZA_RADIUS*2)) * VERTICAL_DRIFT * driftMod;
-      const driftY     = Math.floor(baseDriftY + col.dripY);
-
-      const id  = ctx.createImageData(1,H);
-      const dst = id.data;
-
-      const src = (Math.random() < GLITCH_CHANCE && i > 3)
-        ? cols[i - randInt(1,4)].pixels
-        : col.pixels;
-
-      for (let y=0; y<H; y++) {
-        const srcY = y - driftY;
-        if (srcY<0 || srcY>=H) continue;
-        const si=srcY*4, di=y*4;
-        dst[di]=src[si]; dst[di+1]=src[si+1]; dst[di+2]=src[si+2]; dst[di+3]=src[si+3];
-      }
-
-      ctx.putImageData(id, drawX, 0);
-    }
-
-    // Live pizzas, clipped strictly to left of slit
-    // Draw each pizza individually so nothing bleeds past SLIT_X
+    // Draw live pizzas clipped strictly to left of slit
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, SLIT_X, H);
@@ -334,8 +289,8 @@
     ctx.restore();
 
     // Ghost slit line
-    ctx.fillStyle='rgba(255,255,255,0.04)';
-    ctx.fillRect(SLIT_X,0,1,H);
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(SLIT_X, 0, 1, H);
 
     requestAnimationFrame(frame);
   }
@@ -343,7 +298,8 @@
   requestAnimationFrame(frame);
 
   window.addEventListener('resize', () => {
-    canvas.width=window.innerWidth; canvas.height=window.innerHeight;
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
   });
 </script>
 </body>
