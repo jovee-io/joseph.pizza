@@ -31,16 +31,15 @@
   // =====================================================
   const PIZZA_COUNT    = 5;
   const PIZZA_RADIUS   = 100;
-  const NOISE_AMOUNT   = 28;     // softer texture on the pizza itself
+  const NOISE_AMOUNT   = 28;
   const BG_COLOR       = '#060608';
-  const VERTICAL_DRIFT = 180;    // a bit more room to drip
-  const GLITCH_CHANCE  = 0.008;  // rare, not constant
-  const SLIT_BASE      = Math.floor(W * 0.40);
-  const SLIT_WANDER    = 100;
+  const VERTICAL_DRIFT = 180;
+  const GLITCH_CHANCE  = 0.008;
+  const SLIT_X         = Math.floor(W * 0.35);  // fixed, no wander
 
-  // Drip wave — how far the slow organic wave displaces columns
-  const DRIP_AMPLITUDE = 90;     // pixels of wave displacement
-  const DRIP_FREQUENCY = 0.003;  // how many wave cycles per column
+  // Drip wave
+  const DRIP_AMPLITUDE = 90;
+  const DRIP_FREQUENCY = 0.003;
 
   // =====================================================
   // HELPERS
@@ -217,7 +216,6 @@
   // =====================================================
   // SLIT + COLUMN STORE
   // =====================================================
-  const slitNoise  = makeSmoother(0.012, 30, 100);
   const driftNoise = makeSmoother(0.018, 20, 80);
 
   // Drip noise — very slow, very smooth
@@ -245,20 +243,19 @@
   function frame() {
 
     // Update slit
-    slitX = Math.floor(SLIT_BASE + slitNoise() * SLIT_WANDER);
-    slitMarker.style.left = slitX + 'px';
+    slitMarker.style.left = SLIT_X + 'px';
 
     // Draw all pizzas to temp canvas
     tempCtx.clearRect(0,0,W,H);
 
     pizzas.forEach(p => {
-      let speed = 0.5 + p.speedNoise() * 2.6;
-      if (Math.random() < 0.006) speed *= -2.8; // lurch back
+      // Speed wobbles smoothly but never goes negative — always left to right
+      const speed = Math.max(0.15, 0.6 + p.speedNoise() * 2.2);
       p.x += speed;
 
-      // Reset off right or far left
-      if (p.x - p.r > W+30 || p.x + p.r < -W*.4) {
-        p.x   = -pSize/2 - randInt(0,80);
+      // Reset only when pizza exits right edge
+      if (p.x - p.r > W + 30) {
+        p.x   = -pSize/2 - randInt(0, 80);
         p.pal = makeNeonPalette();
         p.oCtx.clearRect(0,0,pSize,pSize);
         drawPizza(p.oCtx, pSize/2, pSize/2, p.r, p.pal);
@@ -284,12 +281,12 @@
     const dripY = Math.sin(angle) * dripMag;
 
     // Capture composite slit column
-    const slitData = tempCtx.getImageData(slitX, 0, 1, H);
+    const slitData = tempCtx.getImageData(SLIT_X, 0, 1, H);
     const pixels   = new Uint8ClampedArray(slitData.data);
     cols.push({ pixels, dripX, dripY });
 
     // Keep store bounded
-    const maxCols = W - Math.min(slitX, W-10) + 20;
+    const maxCols = W - SLIT_X + 20;
     if (cols.length > maxCols) cols.shift();
 
     // --- Render ---
@@ -303,13 +300,9 @@
       const col = cols[i];
       const age = total-1-i;
 
-      // Base slit-scan x position — columns fan rightward from slit
-      // Now also shifted by the x component of the drift angle
-      const baseDriftX = (age / (PIZZA_RADIUS*2)) * VERTICAL_DRIFT * driftMod;
-      const drawX = Math.floor(slitX + (total-1-i) + 1 + col.dripX);
+      const drawX = Math.floor(SLIT_X + (total-1-i) + 1 + col.dripX);
       if (drawX >= W || drawX < 0) continue;
 
-      // Y displacement: base linear drift + the angled drip component
       const baseDriftY = (age / (PIZZA_RADIUS*2)) * VERTICAL_DRIFT * driftMod;
       const driftY     = Math.floor(baseDriftY + col.dripY);
 
@@ -332,13 +325,13 @@
 
     // Live pizzas, clipped left of slit
     ctx.save();
-    ctx.beginPath(); ctx.rect(0,0,slitX,H); ctx.clip();
+    ctx.beginPath(); ctx.rect(0,0,SLIT_X,H); ctx.clip();
     ctx.drawImage(tempCanvas,0,0);
     ctx.restore();
 
     // Ghost slit line
     ctx.fillStyle='rgba(255,255,255,0.04)';
-    ctx.fillRect(slitX,0,1,H);
+    ctx.fillRect(SLIT_X,0,1,H);
 
     requestAnimationFrame(frame);
   }
