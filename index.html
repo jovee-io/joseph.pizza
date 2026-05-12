@@ -72,24 +72,93 @@
   }
 
   // =====================================================
+  // WOBBLE PATH HELPER
+  // Builds a closed path that looks like a hand-drawn circle —
+  // radius displaced by smooth noise at each angle step.
+  // wobbleSeeds is an array of random values baked in per-pizza
+  // so the shape is consistent but unique to each pizza.
+  // =====================================================
+  function wobblePath(ctx, cx, cy, r, seeds, wobbleAmt, steps=80) {
+    ctx.beginPath();
+    for (let i=0; i<=steps; i++) {
+      const t     = i / steps;
+      const angle = t * Math.PI * 2;
+      // Layer two sine frequencies using the seeds for phase offsets
+      const disp  = wobbleAmt * (
+        Math.sin(angle * 3 + seeds[0]) * 0.5 +
+        Math.sin(angle * 7 + seeds[1]) * 0.3 +
+        Math.sin(angle * 2 + seeds[2]) * 0.2
+      );
+      const rr = r + disp;
+      const x  = cx + Math.cos(angle) * rr;
+      const y  = cy + Math.sin(angle) * rr;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  }
+
+  // =====================================================
   // DRAW PIZZA
   // =====================================================
   function drawPizza(ctx, cx, cy, r, p) {
-    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
-    ctx.fillStyle = p.crust; ctx.fill();
 
-    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
-    ctx.strokeStyle = p.crustRing; ctx.lineWidth=13; ctx.stroke();
+    // Each pizza gets baked-in wobble seeds so its shape is
+    // consistent each time it's drawn but unique to this pizza
+    const seeds = p.wobbleSeeds;
 
-    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
-    ctx.strokeStyle = p.outline; ctx.lineWidth=3; ctx.stroke();
+    // ----- Drop shadow (minimal) -----
+    ctx.save();
+    ctx.shadowColor   = 'rgba(0,0,0,0.55)';
+    ctx.shadowBlur    = 18;
+    ctx.shadowOffsetX = 6;
+    ctx.shadowOffsetY = 8;
+    wobblePath(ctx, cx, cy, r, seeds, r * 0.06);
+    ctx.fillStyle = 'rgba(0,0,0,0.01)'; // just enough to trigger shadow
+    ctx.fill();
+    ctx.restore();
 
-    ctx.beginPath(); ctx.arc(cx,cy,r*0.82,0,Math.PI*2);
-    ctx.fillStyle = p.sauce; ctx.fill();
+    // ----- Crust fill (wobbled) -----
+    wobblePath(ctx, cx, cy, r, seeds, r * 0.06);
+    ctx.fillStyle = p.crust;
+    ctx.fill();
 
-    ctx.beginPath(); ctx.arc(cx,cy,r*0.78,0,Math.PI*2);
-    ctx.fillStyle = p.cheese; ctx.fill();
+    // ----- Crust ring — thick stroke on the wobbled path -----
+    wobblePath(ctx, cx, cy, r, seeds, r * 0.06);
+    ctx.strokeStyle = p.crustRing;
+    ctx.lineWidth   = 14;
+    ctx.stroke();
 
+    // ----- Crust outline -----
+    wobblePath(ctx, cx, cy, r, seeds, r * 0.06);
+    ctx.strokeStyle = p.outline;
+    ctx.lineWidth   = 3;
+    ctx.stroke();
+
+    // ----- 3D crust shading — radial gradient from upper-left -----
+    // Light source is upper-left; crust gets a bright spot there
+    // and darkens toward lower-right
+    wobblePath(ctx, cx, cy, r, seeds, r * 0.06);
+    const crustGrad = ctx.createRadialGradient(
+      cx - r * 0.35, cy - r * 0.35, r * 0.05,  // highlight center
+      cx, cy, r
+    );
+    crustGrad.addColorStop(0,   'rgba(255,255,255,0.22)');
+    crustGrad.addColorStop(0.5, 'rgba(0,0,0,0)');
+    crustGrad.addColorStop(1,   'rgba(0,0,0,0.28)');
+    ctx.fillStyle = crustGrad;
+    ctx.fill();
+
+    // ----- Sauce (slightly wobbled inward) -----
+    wobblePath(ctx, cx, cy * 1.0, r * 0.82, seeds, r * 0.05);
+    ctx.fillStyle = p.sauce;
+    ctx.fill();
+
+    // ----- Cheese base -----
+    wobblePath(ctx, cx, cy, r * 0.78, seeds, r * 0.04);
+    ctx.fillStyle = p.cheese;
+    ctx.fill();
+
+    // ----- Cheese blobs -----
     [{dx:-.2,dy:-.3,rx:.28,ry:.18,a:.4},{dx:.3,dy:.1,rx:.22,ry:.16,a:-.3},
      {dx:-.1,dy:.35,rx:.25,ry:.14,a:.8},{dx:.1,dy:-.1,rx:.3,ry:.2,a:.1}]
     .forEach(b => {
@@ -98,6 +167,19 @@
       ctx.fillStyle=p.cheeseBlob; ctx.fill(); ctx.restore();
     });
 
+    // ----- 3D cheese shading -----
+    wobblePath(ctx, cx, cy, r * 0.78, seeds, r * 0.04);
+    const cheeseGrad = ctx.createRadialGradient(
+      cx - r * 0.3, cy - r * 0.3, r * 0.05,
+      cx, cy, r * 0.78
+    );
+    cheeseGrad.addColorStop(0,   'rgba(255,255,255,0.18)');
+    cheeseGrad.addColorStop(0.6, 'rgba(0,0,0,0)');
+    cheeseGrad.addColorStop(1,   'rgba(0,0,0,0.2)');
+    ctx.fillStyle = cheeseGrad;
+    ctx.fill();
+
+    // ----- Slice lines -----
     for(let i=0;i<6;i++){
       const a=(i/6)*Math.PI*2;
       ctx.beginPath(); ctx.moveTo(cx,cy);
@@ -105,73 +187,69 @@
       ctx.strokeStyle=p.outline; ctx.lineWidth=2; ctx.stroke();
     }
 
-    // Pepperoni — random count, scattered positions, varied sizes and squash
-    const pepCount = randInt(5, 14);
-    const maxPlaceRadius = r * 0.68; // stay within the cheese
-
-    // Use rejection sampling to scatter them without too much overlap
+    // ----- Pepperoni -----
+    const pepCount      = randInt(5, 14);
+    const maxPlaceRadius = r * 0.68;
     const placed = [];
     let attempts = 0;
     while (placed.length < pepCount && attempts < 200) {
       attempts++;
-      // Random polar position within the cheese area
-      const dist  = Math.sqrt(Math.random()) * maxPlaceRadius;
-      const angle = Math.random() * Math.PI * 2;
-      const px    = cx + Math.cos(angle) * dist;
-      const py    = cy + Math.sin(angle) * dist;
-      const pr    = r * (0.07 + Math.random() * 0.09); // varied radius
-      const squashX = 0.7 + Math.random() * 0.6;       // horizontal squash
-      const squashY = 0.7 + Math.random() * 0.6;       // vertical squash
-      const tilt  = Math.random() * Math.PI;            // random rotation
-
-      // Reject if too close to an existing pepperoni
+      const dist    = Math.sqrt(Math.random()) * maxPlaceRadius;
+      const angle   = Math.random() * Math.PI * 2;
+      const px      = cx + Math.cos(angle) * dist;
+      const py      = cy + Math.sin(angle) * dist;
+      const pr      = r * (0.07 + Math.random() * 0.09);
+      const squashX = 0.7 + Math.random() * 0.6;
+      const squashY = 0.7 + Math.random() * 0.6;
+      const tilt    = Math.random() * Math.PI;
       const tooClose = placed.some(q => {
-        const dx = px - q.px, dy = py - q.py;
-        return Math.sqrt(dx*dx + dy*dy) < pr + q.pr + 2;
+        const dx=px-q.px, dy=py-q.py;
+        return Math.sqrt(dx*dx+dy*dy) < pr+q.pr+2;
       });
       if (!tooClose) placed.push({ px, py, pr, squashX, squashY, tilt });
     }
 
     placed.forEach(({ px, py, pr, squashX, squashY, tilt }) => {
       // Shadow
-      ctx.save();
-      ctx.translate(px+1.5, py+1.5);
-      ctx.rotate(tilt);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, pr*squashX, pr*squashY, 0, 0, Math.PI*2);
-      ctx.fillStyle='rgba(0,0,0,.35)'; ctx.fill();
-      ctx.restore();
+      ctx.save(); ctx.translate(px+2, py+2); ctx.rotate(tilt);
+      ctx.beginPath(); ctx.ellipse(0,0,pr*squashX,pr*squashY,0,0,Math.PI*2);
+      ctx.fillStyle='rgba(0,0,0,.4)'; ctx.fill(); ctx.restore();
 
       // Main disc
-      ctx.save();
-      ctx.translate(px, py);
-      ctx.rotate(tilt);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, pr*squashX, pr*squashY, 0, 0, Math.PI*2);
+      ctx.save(); ctx.translate(px,py); ctx.rotate(tilt);
+      ctx.beginPath(); ctx.ellipse(0,0,pr*squashX,pr*squashY,0,0,Math.PI*2);
       ctx.fillStyle=p.pepperoni; ctx.fill();
-      ctx.restore();
 
-      // Highlight
-      ctx.save();
-      ctx.translate(px - pr*.3, py - pr*.3);
-      ctx.rotate(tilt);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, pr*squashX*.35, pr*squashY*.35, 0, 0, Math.PI*2);
-      ctx.fillStyle='rgba(255,255,255,.28)'; ctx.fill();
+      // 3D shading on pepperoni
+      const pepGrad = ctx.createRadialGradient(-pr*.25,-pr*.25,pr*.05, 0,0,pr);
+      pepGrad.addColorStop(0,   'rgba(255,255,255,0.30)');
+      pepGrad.addColorStop(0.5, 'rgba(0,0,0,0)');
+      pepGrad.addColorStop(1,   'rgba(0,0,0,0.35)');
+      ctx.fillStyle = pepGrad; ctx.fill();
       ctx.restore();
 
       // Outline
-      ctx.save();
-      ctx.translate(px, py);
-      ctx.rotate(tilt);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, pr*squashX, pr*squashY, 0, 0, Math.PI*2);
+      ctx.save(); ctx.translate(px,py); ctx.rotate(tilt);
+      ctx.beginPath(); ctx.ellipse(0,0,pr*squashX,pr*squashY,0,0,Math.PI*2);
       ctx.strokeStyle=p.outline; ctx.lineWidth=1.5; ctx.stroke();
       ctx.restore();
     });
 
-    // noise
-    const id=ctx.getImageData(Math.floor(cx-r),Math.floor(cy-r),Math.ceil(r*2),Math.ceil(r*2));
+    // ----- Specular highlight — the grease shine -----
+    // A soft bright ellipse in the upper-left quadrant
+    const shinGrad = ctx.createRadialGradient(
+      cx - r*0.28, cy - r*0.28, 0,
+      cx - r*0.28, cy - r*0.28, r*0.45
+    );
+    shinGrad.addColorStop(0,   'rgba(255,255,255,0.18)');
+    shinGrad.addColorStop(1,   'rgba(255,255,255,0)');
+    ctx.fillStyle = shinGrad;
+    ctx.beginPath();
+    ctx.ellipse(cx - r*0.28, cy - r*0.28, r*0.45, r*0.32, -0.5, 0, Math.PI*2);
+    ctx.fill();
+
+    // ----- Noise texture -----
+    const id=ctx.getImageData(Math.floor(cx-r-10),Math.floor(cy-r-10),Math.ceil(r*2+20),Math.ceil(r*2+20));
     const d=id.data;
     for(let i=0;i<d.length;i+=4){
       if(d[i+3]>0){
@@ -181,7 +259,7 @@
         d[i+2]=Math.min(255,Math.max(0,d[i+2]+n));
       }
     }
-    ctx.putImageData(id,Math.floor(cx-r),Math.floor(cy-r));
+    ctx.putImageData(id,Math.floor(cx-r-10),Math.floor(cy-r-10));
   }
 
   // =====================================================
@@ -197,10 +275,12 @@
     const laneH = H / PIZZA_COUNT;
     const y    = laneH*index + laneH*0.5 + randInt(-25,25);
     const pal  = makeNeonPalette();
+    // Bake in three random phase offsets that define this pizza's unique wobble shape
+    pal.wobbleSeeds = [Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2];
     drawPizza(oCtx, pSize/2, pSize/2, r, pal);
     return {
       off, oCtx, r, y, pal,
-      x: -pSize/2 - randInt(0, W),  // staggered starts
+      x: -pSize/2 - randInt(0, W),
       speedNoise: makeSmoother(0.025+Math.random()*.02, 15, 70),
     };
   }
@@ -246,6 +326,7 @@
       if (p.x - p.r > W + 30) {
         p.x   = -pSize/2 - randInt(0, 80);
         p.pal = makeNeonPalette();
+        p.pal.wobbleSeeds = [Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2];
         p.oCtx.clearRect(0, 0, pSize, pSize);
         drawPizza(p.oCtx, pSize/2, pSize/2, p.r, p.pal);
       }
