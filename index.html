@@ -29,7 +29,8 @@
   // =====================================================
   // PARAMETERS
   // =====================================================
-  const PIZZA_COUNT  = 5;
+  const MIN_PIZZAS   = 2;
+  const MAX_PIZZAS   = 9;
   const PIZZA_RADIUS = 100;
   const NOISE_AMOUNT = 28;
   const BG_COLOR     = '#060608';
@@ -267,25 +268,34 @@
   // =====================================================
   const pSize = (PIZZA_RADIUS+30)*2;
 
-  function makePizza(index) {
+  // Random vertical spawn point, full screen height, keeping the
+  // pizza's offscreen canvas fully on-screen
+  function randomY() {
+    const margin = pSize / 2;
+    return margin + Math.random() * Math.max(1, H - margin * 2);
+  }
+
+  function makePizza() {
     const off  = document.createElement('canvas');
     off.width  = pSize; off.height = pSize;
     const oCtx = off.getContext('2d');
     const r    = PIZZA_RADIUS + randInt(-18,18);
-    const laneH = H / PIZZA_COUNT;
-    const y    = laneH*index + laneH*0.5 + randInt(-25,25);
     const pal  = makeNeonPalette();
     // Bake in three random phase offsets that define this pizza's unique wobble shape
     pal.wobbleSeeds = [Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2];
     drawPizza(oCtx, pSize/2, pSize/2, r, pal);
     return {
-      off, oCtx, r, y, pal,
+      off, oCtx, r, pal,
+      y: randomY(),
       x: -pSize/2 - randInt(0, W),
       speedNoise: makeSmoother(0.025+Math.random()*.02, 15, 70),
     };
   }
 
-  const pizzas = Array.from({length:PIZZA_COUNT}, (_,i) => makePizza(i));
+  const pizzas = Array.from(
+    {length: randInt(MIN_PIZZAS, MAX_PIZZAS + 1)},
+    () => makePizza()
+  );
 
   // =====================================================
   // TAPESTRY CANVAS
@@ -319,12 +329,28 @@
 
     // --- Draw all pizzas to temp canvas (live feed) ---
     tempCtx.clearRect(0, 0, W, H);
-    pizzas.forEach(p => {
+
+    // Occasionally let the population grow, up to the cap
+    if (pizzas.length < MAX_PIZZAS && Math.random() < 0.006) {
+      pizzas.push(makePizza());
+    }
+
+    // Iterate backwards so we can retire pizzas mid-loop without
+    // disturbing indices we haven't visited yet
+    for (let i = pizzas.length - 1; i >= 0; i--) {
+      const p = pizzas[i];
       const speed = Math.max(0.15, 0.6 + p.speedNoise() * 2.2);
       p.x += speed;
 
       if (p.x - p.r > W + 30) {
+        // Pizza finished its run — either retire it (shrinking the
+        // population) or send it around again from a fresh spot
+        if (pizzas.length > MIN_PIZZAS && Math.random() < 0.35) {
+          pizzas.splice(i, 1);
+          continue;
+        }
         p.x   = -pSize/2 - randInt(0, 80);
+        p.y   = randomY();
         p.pal = makeNeonPalette();
         p.pal.wobbleSeeds = [Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2];
         p.oCtx.clearRect(0, 0, pSize, pSize);
@@ -332,7 +358,7 @@
       }
 
       tempCtx.drawImage(p.off, Math.floor(p.x - pSize/2), Math.floor(p.y - pSize/2));
-    });
+    }
 
     // --- Update tapestry ---
     // Step 1: shift the entire tapestry one pixel to the right
