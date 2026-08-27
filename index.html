@@ -73,6 +73,43 @@
   }
 
   // =====================================================
+  // PIZZA RECIPES
+  // A recipe bundles every randomized rule that defines how one
+  // pizza looks and is "photographed": its size, its palette, its
+  // topping count, and its projection — the angle it's viewed
+  // from, which fakes a 3D tilt while everything is still drawn
+  // as flat 2D shapes. New randomized traits belong here, in one
+  // place, instead of scattered inline in drawPizza or the
+  // spawn/respawn call sites.
+  // =====================================================
+  const MIN_SQUASH = 0.32; // 1 = top-down circle, lower = more edge-on ellipse
+  const MAX_SQUASH = 0.95;
+
+  // A random flattening (squash) plus a random rotation of the
+  // flattening axis — together these place the "camera" at an
+  // arbitrary angle around the pizza rather than always straight
+  // above it or always squashed along one fixed axis.
+  function randomProjection() {
+    return {
+      squash: MIN_SQUASH + Math.random() * (MAX_SQUASH - MIN_SQUASH),
+      rot:    Math.random() * Math.PI * 2,
+    };
+  }
+
+  function makePizzaRecipe() {
+    const pal = makeNeonPalette();
+    // Baked-in per-pizza randomness so each shape is consistent
+    // every time it's redrawn but unique to this pizza
+    pal.wobbleSeeds    = [Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2];
+    pal.pepperoniCount = randInt(5, 14);
+    return {
+      r: PIZZA_RADIUS + randInt(-18, 18),
+      pal,
+      projection: randomProjection(),
+    };
+  }
+
+  // =====================================================
   // WOBBLE PATH HELPER
   // Builds a closed path that looks like a hand-drawn circle —
   // radius displaced by smooth noise at each angle step.
@@ -189,7 +226,7 @@
     }
 
     // ----- Pepperoni -----
-    const pepCount      = randInt(5, 14);
+    const pepCount      = p.pepperoniCount;
     const maxPlaceRadius = r * 0.68;
     const placed = [];
     let attempts = 0;
@@ -264,6 +301,25 @@
   }
 
   // =====================================================
+  // PAINT PIZZA (with projection)
+  // Wraps drawPizza in the recipe's projection transform: a
+  // rotate+scale pivoted on (cx,cy) — rotate to the viewing angle,
+  // flatten one axis to simulate the tilt. Pivoting keeps (cx,cy)
+  // fixed, so drawPizza itself stays 100% 2D and unaware it's
+  // being "photographed" from an angle.
+  // =====================================================
+  function paintPizza(ctx, cx, cy, recipe) {
+    const { r, pal, projection } = recipe;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(projection.rot);
+    ctx.scale(1, projection.squash);
+    ctx.translate(-cx, -cy);
+    drawPizza(ctx, cx, cy, r, pal);
+    ctx.restore();
+  }
+
+  // =====================================================
   // PIZZA OBJECTS
   // =====================================================
   const pSize = (PIZZA_RADIUS+30)*2;
@@ -276,16 +332,14 @@
   }
 
   function makePizza() {
-    const off  = document.createElement('canvas');
-    off.width  = pSize; off.height = pSize;
-    const oCtx = off.getContext('2d');
-    const r    = PIZZA_RADIUS + randInt(-18,18);
-    const pal  = makeNeonPalette();
-    // Bake in three random phase offsets that define this pizza's unique wobble shape
-    pal.wobbleSeeds = [Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2];
-    drawPizza(oCtx, pSize/2, pSize/2, r, pal);
+    const off    = document.createElement('canvas');
+    off.width    = pSize; off.height = pSize;
+    const oCtx   = off.getContext('2d');
+    const recipe = makePizzaRecipe();
+    paintPizza(oCtx, pSize/2, pSize/2, recipe);
     return {
-      off, oCtx, r, pal,
+      off, oCtx, recipe,
+      r: recipe.r,
       y: randomY(),
       x: -pSize/2 - randInt(0, W),
       speedNoise: makeSmoother(0.025+Math.random()*.02, 15, 70),
@@ -349,12 +403,12 @@
           pizzas.splice(i, 1);
           continue;
         }
-        p.x   = -pSize/2 - randInt(0, 80);
-        p.y   = randomY();
-        p.pal = makeNeonPalette();
-        p.pal.wobbleSeeds = [Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2];
+        p.x      = -pSize/2 - randInt(0, 80);
+        p.y      = randomY();
+        p.recipe = makePizzaRecipe();
+        p.r      = p.recipe.r;
         p.oCtx.clearRect(0, 0, pSize, pSize);
-        drawPizza(p.oCtx, pSize/2, pSize/2, p.r, p.pal);
+        paintPizza(p.oCtx, pSize/2, pSize/2, p.recipe);
       }
 
       tempCtx.drawImage(p.off, Math.floor(p.x - pSize/2), Math.floor(p.y - pSize/2));
