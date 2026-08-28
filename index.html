@@ -20,10 +20,11 @@
 <script>
   const canvas = document.getElementById('main');
   const ctx    = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
   canvas.width  = window.innerWidth;
   canvas.height = window.innerHeight;
-  const W = canvas.width;
-  const H = canvas.height;
+  let W = canvas.width;
+  let H = canvas.height;
   const slitMarker = document.getElementById('slit-marker');
 
   // =====================================================
@@ -34,7 +35,7 @@
   const PIZZA_RADIUS = 100;
   const NOISE_AMOUNT = 28;
   const BG_COLOR     = '#060608';
-  const SLIT_X       = Math.floor(W * 0.35);
+  let SLIT_X         = Math.floor(W * 0.35);
 
   // =====================================================
   // HELPERS
@@ -141,18 +142,24 @@
     return { x: cx / (6 * area), y: cy / (6 * area) };
   }
 
-  // Move every point of a boundary toward the centroid by a fixed
-  // distance, producing a smaller curve with the same character —
-  // this is how the crust band and the cheese layer are derived
-  // from the outer edge rather than separately generated.
-  function insetBoundary(pts, centroid, width) {
-    return pts.map(p => {
-      const dx = p.x - centroid.x, dy = p.y - centroid.y;
-      const len = Math.hypot(dx, dy);
-      if (len <= width) return { x: centroid.x, y: centroid.y };
-      const scale = (len - width) / len;
-      return { x: centroid.x + dx * scale, y: centroid.y + dy * scale };
-    });
+  // A smaller shape sharing every deformation parameter with the
+  // original — same viewing rotation, same far-side pinch, same
+  // wobble character — just at a reduced base radius. Building the
+  // crust's inner edge and the cheese layer this way (regenerating
+  // the same curve family, smaller) keeps their width visually
+  // uniform all the way around and keeps them "in perspective"
+  // with the outer edge. Shrinking each boundary point straight
+  // toward the centroid instead reads unevenly wherever the curve
+  // is tightly pinched or curved, since the centroid-to-point
+  // direction there diverges from the curve's true local normal.
+  function shrinkShape(shape, width) {
+    const rx = Math.max(4, shape.rx - width);
+    return {
+      ...shape,
+      rx,
+      ry: Math.max(4, shape.ry - width * (shape.ry / shape.rx)),
+      wobbleAmt: shape.wobbleAmt * (rx / shape.rx),
+    };
   }
 
   // Tag each boundary point with its true angle from the centroid.
@@ -233,11 +240,13 @@
   function drawPizza(ctx, cx, cy, recipe) {
     const { pal, shape, pepperoniCount } = recipe;
 
-    const outer    = buildBoundary(shape);
-    const centroid = polygonCentroid(outer);
-    const crustIn  = insetBoundary(outer, centroid, shape.rx * 0.12);
-    const cheese   = insetBoundary(crustIn, centroid, shape.rx * 0.04);
-    const maxR     = outer.reduce((m, p) => Math.max(m, Math.hypot(p.x - centroid.x, p.y - centroid.y)), 0);
+    const outer       = buildBoundary(shape);
+    const centroid    = polygonCentroid(outer);
+    const crustShape  = shrinkShape(shape, shape.rx * 0.12);
+    const crustIn     = buildBoundary(crustShape);
+    const cheeseShape = shrinkShape(crustShape, shape.rx * 0.04);
+    const cheese      = buildBoundary(cheeseShape);
+    const maxR        = outer.reduce((m, p) => Math.max(m, Math.hypot(p.x - centroid.x, p.y - centroid.y)), 0);
 
     const toWorld  = p => ({ x: cx + p.x, y: cy + p.y });
     const world    = toWorld(centroid);
@@ -448,16 +457,18 @@
 
   // =====================================================
   // TAPESTRY CANVAS
-  // This is the slit scan output — a single offscreen canvas
-  // the full width of the screen. Each frame we:
-  //   1. Shift the entire tapestry one pixel to the right
-  //   2. Plant the new slit column at the left edge (SLIT_X + 1)
+  // This is the slit scan output — a single offscreen canvas the
+  // full width of the screen (only [SLIT_X, W) of it is ever
+  // shown). Each frame we:
+  //   1. Shift the scan region one pixel to the right
+  //   2. Plant the new slit column at SLIT_X, the freed-up slot
   // Columns that drift off the right edge just disappear.
   // =====================================================
   const tapestry    = document.createElement('canvas');
   tapestry.width    = W;
   tapestry.height   = H;
   const tapestryCtx = tapestry.getContext('2d');
+  tapestryCtx.imageSmoothingEnabled = false;
 
   // Fill with background to start
   tapestryCtx.fillStyle = BG_COLOR;
@@ -468,6 +479,7 @@
   tempCanvas.width  = W;
   tempCanvas.height = H;
   const tempCtx     = tempCanvas.getContext('2d');
+  tempCtx.imageSmoothingEnabled = false;
 
   // =====================================================
   // MAIN LOOP
@@ -506,13 +518,18 @@
         drawPizza(p.oCtx, pSize/2, pSize/2, p.recipe);
       }
 
-      tempCtx.drawImage(p.off, Math.floor(p.x - pSize/2), Math.floor(p.y - pSize/2));
+      tempCtx.drawImage(p.off, Math.round(p.x - pSize/2), Math.round(p.y - pSize/2));
     }
 
     // --- Update tapestry ---
-    // Step 1: shift the entire tapestry one pixel to the right
-    // We do this by drawing it onto itself offset by 1px
-    tapestryCtx.drawImage(tapestry, 1, 0);
+    // Step 1: shift only the scan region (right of the slit) one
+    // pixel to the right, by drawing that sub-rect of the tapestry
+    // onto itself offset by 1px. Restricting the source/dest to
+    // [SLIT_X, W) keeps the shift from ever reading stale pixels
+    // left of the slit (never displayed, never meant to be part of
+    // the scan) back into the visible tapestry.
+    const scanW = W - SLIT_X;
+    tapestryCtx.drawImage(tapestry, SLIT_X, 0, scanW, H, SLIT_X + 1, 0, scanW, H);
 
     // Step 2: clear the leftmost column of the tapestry (at SLIT_X)
     // so we have a clean slot to plant the new sample
@@ -540,7 +557,7 @@
     ctx.rect(0, 0, SLIT_X, H);
     ctx.clip();
     pizzas.forEach(p => {
-      ctx.drawImage(p.off, Math.floor(p.x - pSize/2), Math.floor(p.y - pSize/2));
+      ctx.drawImage(p.off, Math.round(p.x - pSize/2), Math.round(p.y - pSize/2));
     });
     ctx.restore();
 
@@ -556,6 +573,25 @@
   window.addEventListener('resize', () => {
     canvas.width  = window.innerWidth;
     canvas.height = window.innerHeight;
+    ctx.imageSmoothingEnabled = false;
+    W      = canvas.width;
+    H      = canvas.height;
+    SLIT_X = Math.floor(W * 0.35);
+
+    // The tapestry/temp canvases were sized off the initial W/H —
+    // without this they'd silently stay the old dimensions, which
+    // desyncs every coordinate downstream of them (the slit shift,
+    // the composite draws) from the resized main canvas. Resizing
+    // clears their contents, so the scan history restarts.
+    tapestry.width  = W;
+    tapestry.height = H;
+    tapestryCtx.imageSmoothingEnabled = false;
+    tapestryCtx.fillStyle = BG_COLOR;
+    tapestryCtx.fillRect(0, 0, W, H);
+
+    tempCanvas.width  = W;
+    tempCanvas.height = H;
+    tempCtx.imageSmoothingEnabled = false;
   });
 </script>
 </body>
