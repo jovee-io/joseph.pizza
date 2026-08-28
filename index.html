@@ -73,76 +73,158 @@
   }
 
   // =====================================================
-  // PIZZA RECIPES
-  // A recipe bundles every randomized rule that defines how one
-  // pizza looks and is "photographed": its size, its palette, its
-  // topping count, and its projection — the angle it's viewed
-  // from, which fakes a 3D tilt while everything is still drawn
-  // as flat 2D shapes. New randomized traits belong here, in one
-  // place, instead of scattered inline in drawPizza or the
-  // spawn/respawn call sites.
+  // BOUNDARY GEOMETRY
+  // Every pizza starts as a single closed curve — a deformed
+  // ellipse — instead of a circle that gets transformed after the
+  // fact. The ellipse axes encode the viewing angle (a squashed
+  // minor axis reads as more edge-on), a "far pinch" compresses
+  // the half of the curve representing the side of the disc
+  // tilting away from camera (viewed slightly from above), and
+  // per-point noise roughens the edge. Everything else — crust
+  // band, sauce, cheese, slice lines, toppings — is built by
+  // offsetting or sampling this one curve, so no two pizzas share
+  // a shape and nothing is deformed after it's drawn.
   // =====================================================
-  const MIN_SQUASH = 0.32; // 1 = top-down circle, lower = more edge-on ellipse
-  const MAX_SQUASH = 0.95;
+  function buildBoundary(shape, steps = 90) {
+    const { rx, ry, rot, farPinch, wobbleAmt, wobbleSeeds } = shape;
+    const pts = [];
+    for (let i = 0; i < steps; i++) {
+      const t = (i / steps) * Math.PI * 2;
 
-  // A random flattening (squash) plus a random rotation of the
-  // flattening axis — together these place the "camera" at an
-  // arbitrary angle around the pizza rather than always straight
-  // above it or always squashed along one fixed axis.
-  function randomProjection() {
-    return {
-      squash: MIN_SQUASH + Math.random() * (MAX_SQUASH - MIN_SQUASH),
-      rot:    Math.random() * Math.PI * 2,
-    };
+      // Base ellipse point in the pizza's own (unrotated) frame —
+      // ry < rx is what reads as "tilted away from top-down"
+      let ex = Math.cos(t) * rx;
+      let ey = Math.sin(t) * ry;
+
+      // Perspective cue: the half of the disc tilting away from
+      // the camera (ey<0 here) compresses further, like the far
+      // rim of a plate seen from slightly above
+      if (ey < 0) ey *= (1 - farPinch);
+
+      // Rotate into this pizza's random viewing direction
+      const bx = ex * Math.cos(rot) - ey * Math.sin(rot);
+      const by = ex * Math.sin(rot) + ey * Math.cos(rot);
+
+      // Hand-drawn wobble — perturb the point's distance from the
+      // origin along its own direction, using layered sine noise
+      // keyed to the parametric angle so the curve stays closed
+      const len = Math.hypot(bx, by) || 1;
+      const ang = Math.atan2(by, bx);
+      const disp = wobbleAmt * (
+        Math.sin(t * 3 + wobbleSeeds[0]) * 0.5 +
+        Math.sin(t * 7 + wobbleSeeds[1]) * 0.3 +
+        Math.sin(t * 2 + wobbleSeeds[2]) * 0.2
+      );
+      const wobbled = Math.max(1, len + disp);
+      pts.push({ x: Math.cos(ang) * wobbled, y: Math.sin(ang) * wobbled });
+    }
+    return pts;
   }
+
+  // Centroid of a closed polygon — the standard area-weighted
+  // (shoelace) formula. There's no browser built-in for "center of
+  // an arbitrary curve"; this is the correct math for it.
+  function polygonCentroid(pts) {
+    let area = 0, cx = 0, cy = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const p0 = pts[i], p1 = pts[(i + 1) % pts.length];
+      const cross = p0.x * p1.y - p1.x * p0.y;
+      area += cross;
+      cx += (p0.x + p1.x) * cross;
+      cy += (p0.y + p1.y) * cross;
+    }
+    area *= 0.5;
+    if (Math.abs(area) < 1e-6) {
+      const n = pts.length;
+      return pts.reduce((a, p) => ({ x: a.x + p.x / n, y: a.y + p.y / n }), { x: 0, y: 0 });
+    }
+    return { x: cx / (6 * area), y: cy / (6 * area) };
+  }
+
+  // Move every point of a boundary toward the centroid by a fixed
+  // distance, producing a smaller curve with the same character —
+  // this is how the crust band and the cheese layer are derived
+  // from the outer edge rather than separately generated.
+  function insetBoundary(pts, centroid, width) {
+    return pts.map(p => {
+      const dx = p.x - centroid.x, dy = p.y - centroid.y;
+      const len = Math.hypot(dx, dy);
+      if (len <= width) return { x: centroid.x, y: centroid.y };
+      const scale = (len - width) / len;
+      return { x: centroid.x + dx * scale, y: centroid.y + dy * scale };
+    });
+  }
+
+  // Interpolated point on a boundary at fractional parameter
+  // [0,1) — anchors slice lines and topping placement to the
+  // pizza's actual (non-circular) edge at a given angle.
+  function sampleBoundary(pts, frac) {
+    const n = pts.length;
+    const f = ((frac % 1) + 1) % 1;
+    const idx = f * n;
+    const i0 = Math.floor(idx) % n;
+    const i1 = (i0 + 1) % n;
+    const tt = idx - Math.floor(idx);
+    const p0 = pts[i0], p1 = pts[i1];
+    return { x: p0.x + (p1.x - p0.x) * tt, y: p0.y + (p1.y - p0.y) * tt };
+  }
+
+  // =====================================================
+  // PIZZA RECIPES
+  // A recipe bundles every randomized rule that defines one
+  // pizza: its palette, its topping count, and its shape — the
+  // ellipse axes, viewing rotation, far-side pinch and wobble that
+  // together define its unique boundary curve. New randomized
+  // traits belong here, in one place.
+  // =====================================================
+  const MIN_SQUASH    = 0.32; // ry/rx — 1 = top-down circle, lower = more edge-on
+  const MAX_SQUASH    = 0.95;
+  const MIN_FAR_PINCH = 0.10; // extra compression on the far side of the curve
+  const MAX_FAR_PINCH = 0.35;
 
   function makePizzaRecipe() {
-    const pal = makeNeonPalette();
-    // Baked-in per-pizza randomness so each shape is consistent
-    // every time it's redrawn but unique to this pizza
-    pal.wobbleSeeds    = [Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2];
-    pal.pepperoniCount = randInt(5, 14);
+    const pal   = makeNeonPalette();
+    const baseR = PIZZA_RADIUS + randInt(-18, 18);
     return {
-      r: PIZZA_RADIUS + randInt(-18, 18),
       pal,
-      projection: randomProjection(),
+      pepperoniCount: randInt(5, 14),
+      shape: {
+        rx: baseR,
+        ry: baseR * (MIN_SQUASH + Math.random() * (MAX_SQUASH - MIN_SQUASH)),
+        rot: Math.random() * Math.PI * 2,
+        farPinch: MIN_FAR_PINCH + Math.random() * (MAX_FAR_PINCH - MIN_FAR_PINCH),
+        wobbleAmt: baseR * (0.05 + Math.random() * 0.05),
+        wobbleSeeds: [Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2],
+      },
     };
-  }
-
-  // =====================================================
-  // WOBBLE PATH HELPER
-  // Builds a closed path that looks like a hand-drawn circle —
-  // radius displaced by smooth noise at each angle step.
-  // wobbleSeeds is an array of random values baked in per-pizza
-  // so the shape is consistent but unique to each pizza.
-  // =====================================================
-  function wobblePath(ctx, cx, cy, r, seeds, wobbleAmt, steps=80) {
-    ctx.beginPath();
-    for (let i=0; i<=steps; i++) {
-      const t     = i / steps;
-      const angle = t * Math.PI * 2;
-      // Layer two sine frequencies using the seeds for phase offsets
-      const disp  = wobbleAmt * (
-        Math.sin(angle * 3 + seeds[0]) * 0.5 +
-        Math.sin(angle * 7 + seeds[1]) * 0.3 +
-        Math.sin(angle * 2 + seeds[2]) * 0.2
-      );
-      const rr = r + disp;
-      const x  = cx + Math.cos(angle) * rr;
-      const y  = cy + Math.sin(angle) * rr;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    }
-    ctx.closePath();
   }
 
   // =====================================================
   // DRAW PIZZA
+  // Builds the outer boundary curve first, finds its centroid,
+  // then derives every other layer (crust band, sauce, cheese,
+  // slice lines, topping placement) by offsetting or sampling
+  // that one curve.
   // =====================================================
-  function drawPizza(ctx, cx, cy, r, p) {
+  function drawPizza(ctx, cx, cy, recipe) {
+    const { pal, shape, pepperoniCount } = recipe;
 
-    // Each pizza gets baked-in wobble seeds so its shape is
-    // consistent each time it's drawn but unique to this pizza
-    const seeds = p.wobbleSeeds;
+    const outer    = buildBoundary(shape);
+    const centroid = polygonCentroid(outer);
+    const crustIn  = insetBoundary(outer, centroid, shape.rx * 0.12);
+    const cheese   = insetBoundary(crustIn, centroid, shape.rx * 0.04);
+    const maxR     = outer.reduce((m, p) => Math.max(m, Math.hypot(p.x - centroid.x, p.y - centroid.y)), 0);
+
+    const toWorld  = p => ({ x: cx + p.x, y: cy + p.y });
+    const world    = toWorld(centroid);
+    const pathFrom = pts => {
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const w = toWorld(p);
+        i === 0 ? ctx.moveTo(w.x, w.y) : ctx.lineTo(w.x, w.y);
+      });
+      ctx.closePath();
+    };
 
     // ----- Drop shadow (minimal) -----
     ctx.save();
@@ -150,35 +232,45 @@
     ctx.shadowBlur    = 18;
     ctx.shadowOffsetX = 6;
     ctx.shadowOffsetY = 8;
-    wobblePath(ctx, cx, cy, r, seeds, r * 0.06);
+    pathFrom(outer);
     ctx.fillStyle = 'rgba(0,0,0,0.01)'; // just enough to trigger shadow
     ctx.fill();
     ctx.restore();
 
-    // ----- Crust fill (wobbled) -----
-    wobblePath(ctx, cx, cy, r, seeds, r * 0.06);
-    ctx.fillStyle = p.crust;
+    // ----- Crust fill -----
+    pathFrom(outer);
+    ctx.fillStyle = pal.crust;
     ctx.fill();
 
-    // ----- Crust ring — thick stroke on the wobbled path -----
-    wobblePath(ctx, cx, cy, r, seeds, r * 0.06);
-    ctx.strokeStyle = p.crustRing;
-    ctx.lineWidth   = 14;
-    ctx.stroke();
+    // ----- Crust ring — filled band between the outer edge and
+    // its inward offset, traced as one path (outer forward, inner
+    // reversed) so the nonzero winding rule punches the hole -----
+    ctx.beginPath();
+    outer.forEach((p, i) => {
+      const w = toWorld(p);
+      i === 0 ? ctx.moveTo(w.x, w.y) : ctx.lineTo(w.x, w.y);
+    });
+    ctx.closePath();
+    for (let i = crustIn.length - 1; i >= 0; i--) {
+      const w = toWorld(crustIn[i]);
+      i === crustIn.length - 1 ? ctx.moveTo(w.x, w.y) : ctx.lineTo(w.x, w.y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = pal.crustRing;
+    ctx.fill();
 
     // ----- Crust outline -----
-    wobblePath(ctx, cx, cy, r, seeds, r * 0.06);
-    ctx.strokeStyle = p.outline;
+    pathFrom(outer);
+    ctx.strokeStyle = pal.outline;
     ctx.lineWidth   = 3;
     ctx.stroke();
 
-    // ----- 3D crust shading — radial gradient from upper-left -----
-    // Light source is upper-left; crust gets a bright spot there
-    // and darkens toward lower-right
-    wobblePath(ctx, cx, cy, r, seeds, r * 0.06);
+    // ----- 3D crust shading — fixed world-space light from
+    // upper-left, independent of this pizza's own tilt -----
+    pathFrom(outer);
     const crustGrad = ctx.createRadialGradient(
-      cx - r * 0.35, cy - r * 0.35, r * 0.05,  // highlight center
-      cx, cy, r
+      world.x - maxR * 0.35, world.y - maxR * 0.35, maxR * 0.05,
+      world.x, world.y, maxR
     );
     crustGrad.addColorStop(0,   'rgba(255,255,255,0.22)');
     crustGrad.addColorStop(0.5, 'rgba(0,0,0,0)');
@@ -186,30 +278,30 @@
     ctx.fillStyle = crustGrad;
     ctx.fill();
 
-    // ----- Sauce (slightly wobbled inward) -----
-    wobblePath(ctx, cx, cy * 1.0, r * 0.82, seeds, r * 0.05);
-    ctx.fillStyle = p.sauce;
+    // ----- Sauce — fills the crust's inner boundary -----
+    pathFrom(crustIn);
+    ctx.fillStyle = pal.sauce;
     ctx.fill();
 
     // ----- Cheese base -----
-    wobblePath(ctx, cx, cy, r * 0.78, seeds, r * 0.04);
-    ctx.fillStyle = p.cheese;
+    pathFrom(cheese);
+    ctx.fillStyle = pal.cheese;
     ctx.fill();
 
     // ----- Cheese blobs -----
     [{dx:-.2,dy:-.3,rx:.28,ry:.18,a:.4},{dx:.3,dy:.1,rx:.22,ry:.16,a:-.3},
      {dx:-.1,dy:.35,rx:.25,ry:.14,a:.8},{dx:.1,dy:-.1,rx:.3,ry:.2,a:.1}]
     .forEach(b => {
-      ctx.save(); ctx.translate(cx+r*b.dx, cy+r*b.dy); ctx.rotate(b.a);
-      ctx.beginPath(); ctx.ellipse(0,0,r*b.rx,r*b.ry,0,0,Math.PI*2);
-      ctx.fillStyle=p.cheeseBlob; ctx.fill(); ctx.restore();
+      ctx.save(); ctx.translate(world.x+shape.rx*b.dx, world.y+shape.rx*b.dy); ctx.rotate(b.a+shape.rot);
+      ctx.beginPath(); ctx.ellipse(0,0,shape.rx*b.rx,shape.rx*b.ry,0,0,Math.PI*2);
+      ctx.fillStyle=pal.cheeseBlob; ctx.fill(); ctx.restore();
     });
 
     // ----- 3D cheese shading -----
-    wobblePath(ctx, cx, cy, r * 0.78, seeds, r * 0.04);
+    pathFrom(cheese);
     const cheeseGrad = ctx.createRadialGradient(
-      cx - r * 0.3, cy - r * 0.3, r * 0.05,
-      cx, cy, r * 0.78
+      world.x - maxR * 0.3, world.y - maxR * 0.3, maxR * 0.05,
+      world.x, world.y, maxR * 0.78
     );
     cheeseGrad.addColorStop(0,   'rgba(255,255,255,0.18)');
     cheeseGrad.addColorStop(0.6, 'rgba(0,0,0,0)');
@@ -217,37 +309,43 @@
     ctx.fillStyle = cheeseGrad;
     ctx.fill();
 
-    // ----- Slice lines -----
-    for(let i=0;i<6;i++){
-      const a=(i/6)*Math.PI*2;
-      ctx.beginPath(); ctx.moveTo(cx,cy);
-      ctx.lineTo(cx+Math.cos(a)*r*.95, cy+Math.sin(a)*r*.95);
-      ctx.strokeStyle=p.outline; ctx.lineWidth=2; ctx.stroke();
+    // ----- Slice lines — from the centroid out to the crust's
+    // inner edge, anchored to the actual (non-circular) boundary -----
+    for (let i = 0; i < 6; i++) {
+      const edge = toWorld(sampleBoundary(crustIn, i / 6));
+      ctx.beginPath();
+      ctx.moveTo(world.x, world.y);
+      ctx.lineTo(edge.x, edge.y);
+      ctx.strokeStyle = pal.outline;
+      ctx.lineWidth   = 2;
+      ctx.stroke();
     }
 
-    // ----- Pepperoni -----
-    const pepCount      = p.pepperoniCount;
-    const maxPlaceRadius = r * 0.68;
+    // ----- Pepperoni — placed inside the cheese boundary by
+    // sampling its actual edge at a random angle, then stepping in
+    // from there, so toppings respect the pizza's own shape -----
     const placed = [];
     let attempts = 0;
-    while (placed.length < pepCount && attempts < 200) {
+    while (placed.length < pepperoniCount && attempts < 200) {
       attempts++;
-      const dist    = Math.sqrt(Math.random()) * maxPlaceRadius;
-      const angle   = Math.random() * Math.PI * 2;
-      const px      = cx + Math.cos(angle) * dist;
-      const py      = cy + Math.sin(angle) * dist;
-      const pr      = r * (0.07 + Math.random() * 0.09);
+      const edgePt = sampleBoundary(cheese, Math.random());
+      const reach  = Math.sqrt(Math.random()) * 0.88;
+      const lx     = centroid.x + (edgePt.x - centroid.x) * reach;
+      const ly     = centroid.y + (edgePt.y - centroid.y) * reach;
+      const pr      = shape.rx * (0.07 + Math.random() * 0.09);
       const squashX = 0.7 + Math.random() * 0.6;
       const squashY = 0.7 + Math.random() * 0.6;
       const tilt    = Math.random() * Math.PI;
       const tooClose = placed.some(q => {
-        const dx=px-q.px, dy=py-q.py;
-        return Math.sqrt(dx*dx+dy*dy) < pr+q.pr+2;
+        const dx = lx - q.lx, dy = ly - q.ly;
+        return Math.sqrt(dx*dx + dy*dy) < pr + q.pr + 2;
       });
-      if (!tooClose) placed.push({ px, py, pr, squashX, squashY, tilt });
+      if (!tooClose) placed.push({ lx, ly, pr, squashX, squashY, tilt });
     }
 
-    placed.forEach(({ px, py, pr, squashX, squashY, tilt }) => {
+    placed.forEach(({ lx, ly, pr, squashX, squashY, tilt }) => {
+      const { x: px, y: py } = toWorld({ x: lx, y: ly });
+
       // Shadow
       ctx.save(); ctx.translate(px+2, py+2); ctx.rotate(tilt);
       ctx.beginPath(); ctx.ellipse(0,0,pr*squashX,pr*squashY,0,0,Math.PI*2);
@@ -256,7 +354,7 @@
       // Main disc
       ctx.save(); ctx.translate(px,py); ctx.rotate(tilt);
       ctx.beginPath(); ctx.ellipse(0,0,pr*squashX,pr*squashY,0,0,Math.PI*2);
-      ctx.fillStyle=p.pepperoni; ctx.fill();
+      ctx.fillStyle=pal.pepperoni; ctx.fill();
 
       // 3D shading on pepperoni
       const pepGrad = ctx.createRadialGradient(-pr*.25,-pr*.25,pr*.05, 0,0,pr);
@@ -269,60 +367,45 @@
       // Outline
       ctx.save(); ctx.translate(px,py); ctx.rotate(tilt);
       ctx.beginPath(); ctx.ellipse(0,0,pr*squashX,pr*squashY,0,0,Math.PI*2);
-      ctx.strokeStyle=p.outline; ctx.lineWidth=1.5; ctx.stroke();
+      ctx.strokeStyle=pal.outline; ctx.lineWidth=1.5; ctx.stroke();
       ctx.restore();
     });
 
-    // ----- Specular highlight — the grease shine -----
-    // A soft bright ellipse in the upper-left quadrant
+    // ----- Specular highlight — the grease shine, fixed
+    // world-space light direction -----
     const shinGrad = ctx.createRadialGradient(
-      cx - r*0.28, cy - r*0.28, 0,
-      cx - r*0.28, cy - r*0.28, r*0.45
+      world.x - maxR*0.28, world.y - maxR*0.28, 0,
+      world.x - maxR*0.28, world.y - maxR*0.28, maxR*0.45
     );
     shinGrad.addColorStop(0,   'rgba(255,255,255,0.18)');
     shinGrad.addColorStop(1,   'rgba(255,255,255,0)');
     ctx.fillStyle = shinGrad;
     ctx.beginPath();
-    ctx.ellipse(cx - r*0.28, cy - r*0.28, r*0.45, r*0.32, -0.5, 0, Math.PI*2);
+    ctx.ellipse(world.x - maxR*0.28, world.y - maxR*0.28, maxR*0.45, maxR*0.32, -0.5, 0, Math.PI*2);
     ctx.fill();
 
     // ----- Noise texture -----
-    const id=ctx.getImageData(Math.floor(cx-r-10),Math.floor(cy-r-10),Math.ceil(r*2+20),Math.ceil(r*2+20));
-    const d=id.data;
-    for(let i=0;i<d.length;i+=4){
-      if(d[i+3]>0){
-        const n=(Math.random()-.5)*NOISE_AMOUNT;
-        d[i]=Math.min(255,Math.max(0,d[i]+n));
-        d[i+1]=Math.min(255,Math.max(0,d[i+1]+n));
-        d[i+2]=Math.min(255,Math.max(0,d[i+2]+n));
+    const bx = Math.floor(world.x - maxR - 10);
+    const by = Math.floor(world.y - maxR - 10);
+    const bw = Math.ceil(maxR*2 + 20);
+    const bh = Math.ceil(maxR*2 + 20);
+    const id = ctx.getImageData(bx, by, bw, bh);
+    const d  = id.data;
+    for (let i=0; i<d.length; i+=4) {
+      if (d[i+3] > 0) {
+        const n = (Math.random()-.5) * NOISE_AMOUNT;
+        d[i]   = Math.min(255, Math.max(0, d[i]  +n));
+        d[i+1] = Math.min(255, Math.max(0, d[i+1]+n));
+        d[i+2] = Math.min(255, Math.max(0, d[i+2]+n));
       }
     }
-    ctx.putImageData(id,Math.floor(cx-r-10),Math.floor(cy-r-10));
-  }
-
-  // =====================================================
-  // PAINT PIZZA (with projection)
-  // Wraps drawPizza in the recipe's projection transform: a
-  // rotate+scale pivoted on (cx,cy) — rotate to the viewing angle,
-  // flatten one axis to simulate the tilt. Pivoting keeps (cx,cy)
-  // fixed, so drawPizza itself stays 100% 2D and unaware it's
-  // being "photographed" from an angle.
-  // =====================================================
-  function paintPizza(ctx, cx, cy, recipe) {
-    const { r, pal, projection } = recipe;
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(projection.rot);
-    ctx.scale(1, projection.squash);
-    ctx.translate(-cx, -cy);
-    drawPizza(ctx, cx, cy, r, pal);
-    ctx.restore();
+    ctx.putImageData(id, bx, by);
   }
 
   // =====================================================
   // PIZZA OBJECTS
   // =====================================================
-  const pSize = (PIZZA_RADIUS+30)*2;
+  const pSize = (PIZZA_RADIUS+45)*2;
 
   // Random vertical spawn point, full screen height, keeping the
   // pizza's offscreen canvas fully on-screen
@@ -336,10 +419,10 @@
     off.width    = pSize; off.height = pSize;
     const oCtx   = off.getContext('2d');
     const recipe = makePizzaRecipe();
-    paintPizza(oCtx, pSize/2, pSize/2, recipe);
+    drawPizza(oCtx, pSize/2, pSize/2, recipe);
     return {
       off, oCtx, recipe,
-      r: recipe.r,
+      r: recipe.shape.rx,
       y: randomY(),
       x: -pSize/2 - randInt(0, W),
       speedNoise: makeSmoother(0.025+Math.random()*.02, 15, 70),
@@ -406,9 +489,9 @@
         p.x      = -pSize/2 - randInt(0, 80);
         p.y      = randomY();
         p.recipe = makePizzaRecipe();
-        p.r      = p.recipe.r;
+        p.r      = p.recipe.shape.rx;
         p.oCtx.clearRect(0, 0, pSize, pSize);
-        paintPizza(p.oCtx, pSize/2, pSize/2, p.recipe);
+        drawPizza(p.oCtx, pSize/2, pSize/2, p.recipe);
       }
 
       tempCtx.drawImage(p.off, Math.floor(p.x - pSize/2), Math.floor(p.y - pSize/2));
