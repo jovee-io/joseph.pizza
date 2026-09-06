@@ -500,6 +500,22 @@
     return `hue-rotate(${hue}deg) saturate(${sat}%) brightness(${bri}%)`;
   }
 
+  // Pizzas travel at full speed until they near the slit, then
+  // slow to a crawl right at SLIT_X and speed back up once clear.
+  // The tapestry always advances exactly 1px/frame regardless of
+  // how fast the source is moving, so a slower pizza gets sampled
+  // by many more frames while it barely moves — that's what
+  // stretches and distorts it further in the tapestry the longer
+  // it takes to cross.
+  const SLIT_SLOW_RADIUS = pSize; // distance from the slit where the dip begins
+  const SLIT_MIN_SPEED   = 0.12;  // fraction of normal speed at the exact slit
+
+  function slitSpeedMult(distanceFromSlit) {
+    const t = Math.min(Math.abs(distanceFromSlit), SLIT_SLOW_RADIUS) / SLIT_SLOW_RADIUS;
+    const eased = t * t * (3 - 2 * t); // smoothstep — gentle in and out, no jump
+    return SLIT_MIN_SPEED + (1 - SLIT_MIN_SPEED) * eased;
+  }
+
   function frame() {
 
     slitMarker.style.left = SLIT_X + 'px';
@@ -516,7 +532,8 @@
     // disturbing indices we haven't visited yet
     for (let i = pizzas.length - 1; i >= 0; i--) {
       const p = pizzas[i];
-      const speed = Math.max(0.15, 0.6 + p.speedNoise() * 2.2);
+      const baseSpeed = Math.max(0.15, 0.6 + p.speedNoise() * 2.2);
+      const speed = baseSpeed * slitSpeedMult(p.x - SLIT_X);
       p.x += speed;
 
       if (p.x - p.r > W + 30) {
