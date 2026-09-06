@@ -484,6 +484,22 @@
   // =====================================================
   // MAIN LOOP
   // =====================================================
+
+  // A fresh, unsmoothed random recolor every frame — deliberately
+  // jarring, not eased, so it reads as spastic rather than a
+  // smooth color cycle. Applied only when compositing a pizza into
+  // the live feed, never when redrawing the tapestry, so a pixel's
+  // color keeps flickering right up until the instant it crosses
+  // SLIT_X and gets sampled into the tapestry — at that point it's
+  // baked into a plain pixel and the tapestry never re-filters it,
+  // so it simply stops changing.
+  function randomLiveFilter() {
+    const hue = Math.floor(Math.random() * 360);
+    const sat = 100 + Math.floor(Math.random() * 150);
+    const bri = 85 + Math.floor(Math.random() * 40);
+    return `hue-rotate(${hue}deg) saturate(${sat}%) brightness(${bri}%)`;
+  }
+
   function frame() {
 
     slitMarker.style.left = SLIT_X + 'px';
@@ -518,8 +534,14 @@
         drawPizza(p.oCtx, pSize/2, pSize/2, p.recipe);
       }
 
+      // Recolor for this frame only — computed once and reused for
+      // both the tempCtx sample below and the on-screen draw later,
+      // so what's visibly flickering is exactly what gets frozen
+      p.liveFilter = randomLiveFilter();
+      tempCtx.filter = p.liveFilter;
       tempCtx.drawImage(p.off, Math.round(p.x - pSize/2), Math.round(p.y - pSize/2));
     }
+    tempCtx.filter = 'none';
 
     // --- Update tapestry ---
     // Step 1: shift only the scan region (right of the slit) one
@@ -557,6 +579,7 @@
     ctx.rect(0, 0, SLIT_X, H);
     ctx.clip();
     pizzas.forEach(p => {
+      ctx.filter = p.liveFilter;
       ctx.drawImage(p.off, Math.round(p.x - pSize/2), Math.round(p.y - pSize/2));
     });
     ctx.restore();
