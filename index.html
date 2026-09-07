@@ -441,8 +441,15 @@
     const oCtx   = off.getContext('2d');
     const recipe = makePizzaRecipe();
     drawPizza(oCtx, pSize/2, pSize/2, recipe);
+
+    // Scratch canvas the live-color tint is composited into each
+    // frame, isolated from every other pizza — see tintPizzaLive()
+    const liveCanvas = document.createElement('canvas');
+    liveCanvas.width  = pSize; liveCanvas.height = pSize;
+    const liveCtx     = liveCanvas.getContext('2d');
+
     return {
-      off, oCtx, recipe,
+      off, oCtx, recipe, liveCanvas, liveCtx,
       r: recipe.shape.rx,
       y: randomY(),
       x: -pSize/2 - randInt(0, W),
@@ -485,19 +492,36 @@
   // MAIN LOOP
   // =====================================================
 
-  // A fresh, unsmoothed random recolor every frame — deliberately
-  // jarring, not eased, so it reads as spastic rather than a
-  // smooth color cycle. Applied only when compositing a pizza into
-  // the live feed, never when redrawing the tapestry, so a pixel's
-  // color keeps flickering right up until the instant it crosses
-  // SLIT_X and gets sampled into the tapestry — at that point it's
-  // baked into a plain pixel and the tapestry never re-filters it,
-  // so it simply stops changing.
-  function randomLiveFilter() {
-    const hue = Math.floor(Math.random() * 360);
-    const sat = 100 + Math.floor(Math.random() * 150);
-    const bri = 85 + Math.floor(Math.random() * 40);
-    return `hue-rotate(${hue}deg) saturate(${sat}%) brightness(${bri}%)`;
+  // Recolors a pizza into its own scratch canvas (p.liveCanvas)
+  // using the 'hue' compositing blend mode instead of
+  // CanvasRenderingContext2D.filter — filter is silently
+  // unsupported on some mobile/WebKit browsers (Safari didn't
+  // implement filter on canvas until 15.4; older versions just
+  // no-op it with no error, so the pizza quietly stays its normal
+  // color). globalCompositeOperation's 'hue' mode has much longer-
+  // standing, broader support and gives the same result: the
+  // sprite's hue is replaced by the fill's, while its own
+  // saturation/luminosity — the shading and gradients — show
+  // through, and only where the sprite is actually opaque.
+  // Tinting into an isolated per-pizza canvas (rather than blending
+  // straight onto the shared temp/main canvas) keeps one pizza's
+  // hue from bleeding onto another's pixels wherever two overlap.
+  //
+  // A fresh, unsmoothed random hue every frame — deliberately
+  // jarring, not eased, so it reads as spastic rather than a smooth
+  // color cycle. Applied only when compositing a pizza into the
+  // live feed, never when redrawing the tapestry, so a pixel keeps
+  // flickering right up until the instant it crosses SLIT_X and
+  // gets sampled — at that point it's a plain baked pixel and the
+  // tapestry never re-tints it, so it simply stops changing.
+  function tintPizzaLive(p) {
+    const s = p.liveCtx;
+    s.clearRect(0, 0, pSize, pSize);
+    s.drawImage(p.off, 0, 0);
+    s.globalCompositeOperation = 'hue';
+    s.fillStyle = `hsl(${p.liveHue}, 100%, 50%)`;
+    s.fillRect(0, 0, pSize, pSize);
+    s.globalCompositeOperation = 'source-over';
   }
 
   // Pizzas travel at full speed until they near the slit, then
@@ -554,11 +578,10 @@
       // Recolor for this frame only — computed once and reused for
       // both the tempCtx sample below and the on-screen draw later,
       // so what's visibly flickering is exactly what gets frozen
-      p.liveFilter = randomLiveFilter();
-      tempCtx.filter = p.liveFilter;
-      tempCtx.drawImage(p.off, Math.round(p.x - pSize/2), Math.round(p.y - pSize/2));
+      p.liveHue = Math.random() * 360;
+      tintPizzaLive(p);
+      tempCtx.drawImage(p.liveCanvas, Math.round(p.x - pSize/2), Math.round(p.y - pSize/2));
     }
-    tempCtx.filter = 'none';
 
     // --- Update tapestry ---
     // Step 1: shift only the scan region (right of the slit) one
@@ -596,8 +619,7 @@
     ctx.rect(0, 0, SLIT_X, H);
     ctx.clip();
     pizzas.forEach(p => {
-      ctx.filter = p.liveFilter;
-      ctx.drawImage(p.off, Math.round(p.x - pSize/2), Math.round(p.y - pSize/2));
+      ctx.drawImage(p.liveCanvas, Math.round(p.x - pSize/2), Math.round(p.y - pSize/2));
     });
     ctx.restore();
 
