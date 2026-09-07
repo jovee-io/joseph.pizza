@@ -517,10 +517,25 @@
   function tintPizzaLive(p) {
     const s = p.liveCtx;
     s.clearRect(0, 0, pSize, pSize);
+
+    // 1. Draw the sprite normally — the alpha mask and shading we
+    // want to keep
     s.drawImage(p.off, 0, 0);
+
+    // 2. Recolor via 'hue'. Side effect: since the fill is fully
+    // opaque, this also blows the whole canvas's alpha out to 1 —
+    // that's the "bounding box" that was showing up around each
+    // pizza. Step 3 undoes it.
     s.globalCompositeOperation = 'hue';
     s.fillStyle = `hsl(${p.liveHue}, 100%, 50%)`;
     s.fillRect(0, 0, pSize, pSize);
+
+    // 3. Re-clip back to the sprite's real silhouette by
+    // multiplying alpha against the original sprite's own alpha —
+    // a plain Porter-Duff op, supported everywhere canvas is
+    s.globalCompositeOperation = 'destination-in';
+    s.drawImage(p.off, 0, 0);
+
     s.globalCompositeOperation = 'source-over';
   }
 
